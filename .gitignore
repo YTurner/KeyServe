@@ -1,0 +1,38 @@
+# CMake / Ninja build output
+build/
+cmake-build-*/
+
+# Compiled objects / binaries
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Runtime database files
+*.db
+*.db-journal
+*.db-wal
+
+# Logs / temporary files
+*.log
+*.tmp
+
+# VS Code local workspace settings
+.vscode/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
