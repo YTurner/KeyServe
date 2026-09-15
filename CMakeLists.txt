@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(keyserve
     src/main.cpp
     src/database.cpp
+    src/storage.cpp
 )
 
 target_include_directories(keyserve
