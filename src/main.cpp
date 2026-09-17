@@ -4,6 +4,7 @@
 #include <unordered_map>
 
 #include "database.hpp"
+#include "errors.hpp"
 #include "storage.hpp"
 
 enum COMMAND { PUT, DELETE, GET, EXISTS, EXIT, UNKNOWN };
@@ -80,50 +81,63 @@ static void handlePUT(Database& db, std::istringstream& input) {
     std::cout << "OK\n";
 }
 
-int main() {
-    Database db("keyserve.db");
-
+// handles command calling. returns false if command if need to exit keyserve
+static bool handleCommands(Database& db) {
     std::string line;
 
-    std::cout << "KeyServe\n";
-    std::cout << "Type EXIT to quit.\n";
+    std::cout << "KeyServe> ";
 
-    // TODO: add limits to entry sizes
-    while (true) {
-      std::cout << "KeyServe> ";
-
-      if (!std::getline(std::cin, line)) {
-        break;
-      }
-
-      std::istringstream input(line);
-
-      std::string command;
-      input >> command;
-
-      if (command.empty()) {
-        continue;
-      }
-
-      switch (resolveCommand(command)) {
-        case PUT:
-          handlePUT(db, input);
-          break;
-        case DELETE:
-          handleDELETE(db, input);
-          break;
-        case GET:
-          handleGET(db, input);
-          break;
-        case EXISTS:
-          handleExists(db, input);
-          break;
-        case EXIT:
-          return 0;
-        default:
-          std::cout << "Unknown command: " << command << std::endl;
-      }
+    if (!std::getline(std::cin, line)) {
+        return false;
     }
 
-    return 0;
+    std::istringstream input(line);
+
+    std::string command;
+    input >> command;
+
+    if (command.empty()) {
+        return true;
+    }
+
+    switch (resolveCommand(command)) {
+        case PUT:
+            handlePUT(db, input);
+            break;
+        case DELETE:
+            handleDELETE(db, input);
+            break;
+        case GET:
+            handleGET(db, input);
+            break;
+        case EXISTS:
+            handleExists(db, input);
+            break;
+        case EXIT:
+            return false;
+        default:
+            std::cout << "Unknown command: " << command << std::endl;
+    }
+
+    return true;
+}
+
+int main() {
+    try {
+        Database db("keyserve.db");
+
+        std::cout << "KeyServe\n";
+        std::cout << "Type EXIT to quit.\n";
+
+        while (handleCommands(db));
+    } catch (const CorruptionError& error) {
+        std::cerr << "FATAL: database corruption: " << error.what() << '\n';
+        return 1;
+    } catch (const StorageError& error) {
+        std::cerr << "FATAL: storage error: " << error.what() << '\n';
+        return 1;
+    } catch (const std::exception& error) {
+        std::cerr << "FATAL: unexpected error: " << error.what() << '\n';
+        return 1;
+    }
 }

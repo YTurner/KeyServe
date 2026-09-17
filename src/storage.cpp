@@ -1,9 +1,60 @@
 #include "storage.hpp"
 
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
-Storage::Storage(const std::string& path) : path_(path) {}
+#include "errors.hpp"
+
+Storage::Storage(const std::string& path) : path_(path) {
+    if (!std::filesystem::exists(path_)) {
+        initilizeFile();
+    } else {
+        validateFile();
+    }
+}
+
+void Storage::initilizeFile() {
+    std::ofstream file(path_, std::ios::binary | std::ios::trunc);
+    if (!file) {
+        throw StorageError("Failed to create database file");
+    }
+
+    file.write(FILE_MAGIC, sizeof(FILE_MAGIC));  // file signature
+
+    const std::uint8_t version = FILE_VERSION;
+    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+
+    if (!file) {
+        throw StorageError("Failed to initialize database file");
+    }
+}
+
+void Storage::validateFile() const {
+    std::ifstream file(path_, std::ios::binary);
+    if (!file) {
+        throw StorageError("Failed to open database file");
+    }
+
+    char magic_header[4];
+    file.read(magic_header, sizeof(magic_header));
+    if (!file) {
+        throw CorruptionError("Incomplete database header");
+    }
+    if (std::memcmp(FILE_MAGIC, magic_header, sizeof(FILE_MAGIC)) != 0) {
+        throw CorruptionError("Invalid KeyServe file header");
+    }
+
+    std::uint8_t version;
+    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (!file) {
+        throw CorruptionError("Incomplete database header");
+    }
+    if (version != FILE_VERSION) {
+        throw CorruptionError("Unsupported KeyServe database version");
+    }
+}
 
 void Storage::appendPut(const std::string& key, const std::string& value) {
     std::ofstream file(path_, std::ios::binary | std::ios::app);
@@ -58,9 +109,12 @@ std::vector<Record> Storage::readAll() const {
 
     std::ifstream file(path_, std::ios::binary);
     if (!file) {
-        // For now, a missing database file means an empty database.
-        // TODO: make an actual handler for this
-        return records;
+        throw StorageError("Failed to open database file");
+    }
+
+    file.seekg(sizeof(FILE_MAGIC) + sizeof(FILE_VERSION), std::ios::beg);
+    if (!file) {
+        throw StorageError("Failed to seek past database header");
     }
 
     while (true) {
