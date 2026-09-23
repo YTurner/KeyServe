@@ -30,6 +30,10 @@ class Storage {
 
    private:
     std::string path_;
-    void initilizeFile();
+    void initializeFile();
     void validateFile() const;
+    std::vector<char> serializePayload(const Record& record) const;
+
+    std::uint32_t calculateChecksum(RecordType type,
+                                    const std::vector<char>& payload) const;
 };

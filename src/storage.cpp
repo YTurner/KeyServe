@@ -3,19 +3,31 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 #include "errors.hpp"
 
+namespace {
+
+void appendUint32LE(std::vector<char>& buffer, std::uint32_t value) {
+    buffer.push_back(static_cast<char>(value & 0xFF));
+    buffer.push_back(static_cast<char>((value >> 8) & 0xFF));
+    buffer.push_back(static_cast<char>((value >> 16) & 0xFF));
+    buffer.push_back(static_cast<char>((value >> 24) & 0xFF));
+}
+
+}  // namespace
+
 Storage::Storage(const std::string& path) : path_(path) {
     if (!std::filesystem::exists(path_)) {
-        initilizeFile();
+        initializeFile();
     } else {
         validateFile();
     }
 }
 
-void Storage::initilizeFile() {
+void Storage::initializeFile() {
     std::ofstream file(path_, std::ios::binary | std::ios::trunc);
     if (!file) {
         throw StorageError("Failed to create database file");
@@ -176,4 +188,56 @@ std::vector<Record> Storage::readAll() const {
     }
 
     return records;
+}
+
+
+std::vector<char> Storage::serializePayload(const Record& record) const
+{
+    if (record.key.size() > MAX_KEY_SIZE) {
+        throw StorageError("Key exceeds maximum allowed size");
+    }
+
+    if (record.value.size() > MAX_VALUE_SIZE) {
+        throw StorageError("Value exceeds maximum allowed size");
+    }
+
+    std::vector<char> payload;
+
+    const auto keyLength =
+        static_cast<std::uint32_t>(record.key.size());
+
+    appendUint32LE(payload, keyLength);
+
+    payload.insert(
+        payload.end(),
+        record.key.begin(),
+        record.key.end()
+    );
+
+    switch (record.type) {
+        case RecordType::Put: {
+            const auto valueLength =
+                static_cast<std::uint32_t>(record.value.size());
+
+            appendUint32LE(payload, valueLength);
+
+            payload.insert(
+                payload.end(),
+                record.value.begin(),
+                record.value.end()
+            );
+
+            break;
+        }
+
+        case RecordType::Delete:
+            break;
+
+        default:
+            throw std::logic_error(
+                "Invalid record type during serialization"
+            );
+    }
+
+    return payload;
 }
