@@ -8,13 +8,15 @@
 
 #include "errors.hpp"
 
+// CRC-32/IEEE parameters used for record integrity checks.
+static constexpr std::uint32_t CRC_POLYNOMIAL = 0xEDB88320;
+static constexpr std::uint32_t CRC_INITIAL_VALUE = 0xFFFFFFFF;
+static constexpr std::uint32_t CRC_FINAL_XOR_VALUE = 0xFFFFFFFF;
+
 namespace {
 
-// Appends a uint32_t to the end of a byte buffer in little-endian order.
-// Exactly four bytes are appended, least-significant byte first.
-//
-// Example:
-//   value 0x12345678 -> bytes 78 56 34 12
+// Appends a uint32_t as four little-endian bytes.
+// The file format uses a fixed byte order instead of the host machine's byte order.
 void appendUint32LE(std::vector<char>& buffer, std::uint32_t value) {
     buffer.push_back(static_cast<char>(value & 0xFF));
     buffer.push_back(static_cast<char>((value >> 8) & 0xFF));
@@ -32,6 +34,7 @@ Storage::Storage(const std::string& path) : path_(path) {
     }
 }
 
+// Creates a new database file containing only the file signature and format version.
 void Storage::initializeFile() {
     std::ofstream file(path_, std::ios::binary | std::ios::trunc);
     if (!file) {
@@ -48,6 +51,7 @@ void Storage::initializeFile() {
     }
 }
 
+// Validates the database signature and file-format version before records are read.
 void Storage::validateFile() const {
     std::ifstream file(path_, std::ios::binary);
     if (!file) {
@@ -190,11 +194,10 @@ std::vector<Record> Storage::readAll() const {
     return records;
 }
 
-/**
- ** this is a helper function for serializeRecord and is only meant to be called from there
- ** as such the validation of input is done in serializeRecord and not here, if you ever
- ** intend to call this function directly, make sure to validate the input first.
- */
+// Serializes only the type-specific payload of a record.
+// PUT:    [keyLength][key][valueLength][value]
+// DELETE: [keyLength][key]
+// Input validation is handled by serializeRecord().
 std::vector<char> Storage::serializePayload(const Record& record) const {
 
     std::vector<char> payload;
@@ -226,6 +229,11 @@ std::vector<char> Storage::serializePayload(const Record& record) const {
     return payload;
 }
 
+// Serializes a complete v2 record in memory:
+// [type][payloadLength][checksum][payload]
+//
+// The CRC covers type + payloadLength + payload.
+// The checksum field itself is not included in the CRC.
 std::vector<char> Storage::serializeRecord(const Record& record) const {
     if (record.key.size() > MAX_KEY_SIZE) {
         throw StorageError("Key exceeds maximum allowed size");
@@ -249,21 +257,37 @@ std::vector<char> Storage::serializeRecord(const Record& record) const {
 
     const auto payload = serializePayload(record);
 
-    // shouldnt need this with current implementation sizes but just in case we change the
-    // implementation later, this will ensure that we dont have a payload that is too large to be
-    // represented by a uint32_t
+    // Protect against future format changes producing a payload that cannot fit
+    // in the uint32_t payloadLength field.
     if (payload.size() > std::numeric_limits<std::uint32_t>::max()) {
         throw StorageError("Payload exceeds maximum allowed size");
     }
     appendUint32LE(recordData, static_cast<std::uint32_t>(payload.size()));
 
-    appendUint32LE(recordData, calculateChecksum(record.type, payload));
+    // Build the exact byte sequence covered by the CRC, excluding the checksum field.
+    std::vector<char> checkSumBuffer;
+    checkSumBuffer.reserve(recordData.size() + payload.size());
+    checkSumBuffer.insert(checkSumBuffer.end(), recordData.begin(), recordData.end());
+    checkSumBuffer.insert(checkSumBuffer.end(), payload.begin(), payload.end());
+
+    appendUint32LE(recordData, calculateChecksum(checkSumBuffer));
     recordData.insert(recordData.end(), payload.begin(), payload.end());
 
     return recordData;
 }
 
-// TODO: Implement a proper checksum calculation for data integrity verification.
-std::uint32_t Storage::calculateChecksum(RecordType type, const std::vector<char>& payload) const {
-    return 0;
+// Calculates CRC-32/IEEE over the supplied serialized bytes.
+std::uint32_t Storage::calculateChecksum(const std::vector<char>& data) const {
+    std::uint32_t crc = CRC_INITIAL_VALUE;
+    for (const auto& byte : data) {
+        crc ^= static_cast<std::uint8_t>(byte);
+        for (int i = 0; i < 8; ++i) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ CRC_POLYNOMIAL;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc ^ CRC_FINAL_XOR_VALUE;
 }

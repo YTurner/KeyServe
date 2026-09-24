@@ -34,5 +34,5 @@ class Storage {
     void validateFile() const;
     std::vector<char> serializePayload(const Record& record) const;
     std::vector<char> serializeRecord(const Record& record) const;
-    std::uint32_t calculateChecksum(RecordType type, const std::vector<char>& payload) const;
+    std::uint32_t calculateChecksum(const std::vector<char>& data) const;
 };
