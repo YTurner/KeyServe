@@ -7,7 +7,7 @@
 #include "storage.hpp"
 
 class Database {
-   public:
+  public:
     explicit Database(const std::string& path);
 
     void put(const std::string& key, const std::string& value);
@@ -15,7 +15,7 @@ class Database {
     bool remove(const std::string& key);
     bool exists(const std::string& key) const;
 
-   private:
+  private:
     Storage storage_;
     std::unordered_map<std::string, std::string> data_;
 };

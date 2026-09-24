@@ -10,6 +10,11 @@
 
 namespace {
 
+// Appends a uint32_t to the end of a byte buffer in little-endian order.
+// Exactly four bytes are appended, least-significant byte first.
+//
+// Example:
+//   value 0x12345678 -> bytes 78 56 34 12
 void appendUint32LE(std::vector<char>& buffer, std::uint32_t value) {
     buffer.push_back(static_cast<char>(value & 0xFF));
     buffer.push_back(static_cast<char>((value >> 8) & 0xFF));
@@ -17,7 +22,7 @@ void appendUint32LE(std::vector<char>& buffer, std::uint32_t value) {
     buffer.push_back(static_cast<char>((value >> 24) & 0xFF));
 }
 
-}  // namespace
+} // namespace
 
 Storage::Storage(const std::string& path) : path_(path) {
     if (!std::filesystem::exists(path_)) {
@@ -33,7 +38,7 @@ void Storage::initializeFile() {
         throw StorageError("Failed to create database file");
     }
 
-    file.write(FILE_MAGIC, sizeof(FILE_MAGIC));  // file signature
+    file.write(FILE_MAGIC, sizeof(FILE_MAGIC)); // file signature
 
     const std::uint8_t version = FILE_VERSION;
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
@@ -84,8 +89,7 @@ void Storage::appendPut(const std::string& key, const std::string& value) {
 
     file.write(reinterpret_cast<const char*>(&keyLength), sizeof(keyLength));
 
-    file.write(reinterpret_cast<const char*>(&valueLength),
-               sizeof(valueLength));
+    file.write(reinterpret_cast<const char*>(&valueLength), sizeof(valueLength));
 
     file.write(key.data(), keyLength);
     file.write(value.data(), valueLength);
@@ -151,18 +155,15 @@ std::vector<Record> Storage::readAll() const {
         std::uint32_t keyLength;
         file.read(reinterpret_cast<char*>(&keyLength), sizeof(keyLength));
         if (!file) {
-            throw std::runtime_error(
-                "Corrupted database: incomplete key length");
+            throw std::runtime_error("Corrupted database: incomplete key length");
         }
 
         std::uint32_t valueLength = 0;
         if (rawType == static_cast<std::uint8_t>(RecordType::Put)) {
-            file.read(reinterpret_cast<char*>(&valueLength),
-                      sizeof(valueLength));
+            file.read(reinterpret_cast<char*>(&valueLength), sizeof(valueLength));
 
             if (!file) {
-                throw std::runtime_error(
-                    "Corrupted database: incomplete value length");
+                throw std::runtime_error("Corrupted database: incomplete value length");
             }
         }
 
@@ -179,8 +180,7 @@ std::vector<Record> Storage::readAll() const {
             file.read(value.data(), valueLength);
 
             if (!file) {
-                throw std::runtime_error(
-                    "Corrupted database: incomplete value");
+                throw std::runtime_error("Corrupted database: incomplete value");
             }
         }
 
@@ -190,9 +190,43 @@ std::vector<Record> Storage::readAll() const {
     return records;
 }
 
+/**
+ ** this is a helper function for serializeRecord and is only meant to be called from there
+ ** as such the validation of input is done in serializeRecord and not here, if you ever
+ ** intend to call this function directly, make sure to validate the input first.
+ */
+std::vector<char> Storage::serializePayload(const Record& record) const {
 
-std::vector<char> Storage::serializePayload(const Record& record) const
-{
+    std::vector<char> payload;
+
+    const auto keyLength = static_cast<std::uint32_t>(record.key.size());
+
+    appendUint32LE(payload, keyLength);
+
+    payload.insert(payload.end(), record.key.begin(), record.key.end());
+
+    switch (record.type) {
+    case RecordType::Put: {
+        const auto valueLength = static_cast<std::uint32_t>(record.value.size());
+
+        appendUint32LE(payload, valueLength);
+
+        payload.insert(payload.end(), record.value.begin(), record.value.end());
+
+        break;
+    }
+
+    case RecordType::Delete:
+        break;
+
+    default:
+        throw std::logic_error("Invalid record type during serialization");
+    }
+
+    return payload;
+}
+
+std::vector<char> Storage::serializeRecord(const Record& record) const {
     if (record.key.size() > MAX_KEY_SIZE) {
         throw StorageError("Key exceeds maximum allowed size");
     }
@@ -201,43 +235,35 @@ std::vector<char> Storage::serializePayload(const Record& record) const
         throw StorageError("Value exceeds maximum allowed size");
     }
 
-    std::vector<char> payload;
-
-    const auto keyLength =
-        static_cast<std::uint32_t>(record.key.size());
-
-    appendUint32LE(payload, keyLength);
-
-    payload.insert(
-        payload.end(),
-        record.key.begin(),
-        record.key.end()
-    );
-
-    switch (record.type) {
-        case RecordType::Put: {
-            const auto valueLength =
-                static_cast<std::uint32_t>(record.value.size());
-
-            appendUint32LE(payload, valueLength);
-
-            payload.insert(
-                payload.end(),
-                record.value.begin(),
-                record.value.end()
-            );
-
-            break;
-        }
-
-        case RecordType::Delete:
-            break;
-
-        default:
-            throw std::logic_error(
-                "Invalid record type during serialization"
-            );
+    if (record.type == RecordType::Delete && !record.value.empty()) {
+        throw std::logic_error("Invalid record type and value combination during serialization");
     }
 
-    return payload;
+    if (record.type != RecordType::Put && record.type != RecordType::Delete) {
+        throw std::logic_error("Invalid record type during serialization");
+    }
+
+    std::vector<char> recordData;
+
+    recordData.push_back(static_cast<char>(record.type));
+
+    const auto payload = serializePayload(record);
+
+    // shouldnt need this with current implementation sizes but just in case we change the
+    // implementation later, this will ensure that we dont have a payload that is too large to be
+    // represented by a uint32_t
+    if (payload.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw StorageError("Payload exceeds maximum allowed size");
+    }
+    appendUint32LE(recordData, static_cast<std::uint32_t>(payload.size()));
+
+    appendUint32LE(recordData, calculateChecksum(record.type, payload));
+    recordData.insert(recordData.end(), payload.begin(), payload.end());
+
+    return recordData;
+}
+
+// TODO: Implement a proper checksum calculation for data integrity verification.
+std::uint32_t Storage::calculateChecksum(RecordType type, const std::vector<char>& payload) const {
+    return 0;
 }

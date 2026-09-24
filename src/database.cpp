@@ -27,12 +27,10 @@ std::optional<std::string> Database::get(const std::string& key) const {
     return it->second;
 }
 
-bool Database::remove(const std::string& key)
-{
+bool Database::remove(const std::string& key) {
     auto it = data_.find(key);
 
-    if (it == data_.end())
-    {
+    if (it == data_.end()) {
         return false;
     }
 

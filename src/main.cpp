@@ -11,11 +11,7 @@ enum COMMAND { PUT, DELETE, GET, EXISTS, EXIT, UNKNOWN };
 
 static COMMAND resolveCommand(const std::string& input) {
     static const std::unordered_map<std::string, COMMAND> commandMap = {
-        {"PUT", PUT},
-        {"DELETE", DELETE},
-        {"GET", GET},
-        {"EXISTS", EXISTS},
-        {"EXIT", EXIT}};
+        {"PUT", PUT}, {"DELETE", DELETE}, {"GET", GET}, {"EXISTS", EXISTS}, {"EXIT", EXIT}};
 
     auto it = commandMap.find(input);
     if (it != commandMap.end()) {
@@ -101,22 +97,22 @@ static bool handleCommands(Database& db) {
     }
 
     switch (resolveCommand(command)) {
-        case PUT:
-            handlePUT(db, input);
-            break;
-        case DELETE:
-            handleDELETE(db, input);
-            break;
-        case GET:
-            handleGET(db, input);
-            break;
-        case EXISTS:
-            handleExists(db, input);
-            break;
-        case EXIT:
-            return false;
-        default:
-            std::cout << "Unknown command: " << command << std::endl;
+    case PUT:
+        handlePUT(db, input);
+        break;
+    case DELETE:
+        handleDELETE(db, input);
+        break;
+    case GET:
+        handleGET(db, input);
+        break;
+    case EXISTS:
+        handleExists(db, input);
+        break;
+    case EXIT:
+        return false;
+    default:
+        std::cout << "Unknown command: " << command << std::endl;
     }
 
     return true;
