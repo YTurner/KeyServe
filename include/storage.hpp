@@ -6,13 +6,6 @@
 
 enum class RecordType : std::uint8_t { Put = 1, Delete = 2 };
 
-// Key Serve DataBase magic bytes for db file signature
-constexpr char FILE_MAGIC[4] = {'K', 'S', 'D', 'B'};
-constexpr std::uint8_t FILE_VERSION = 1;
-
-constexpr std::uint32_t MAX_KEY_SIZE = 1024 * 1024;        // 1 MiB
-constexpr std::uint32_t MAX_VALUE_SIZE = 64 * 1024 * 1024; // 64 MiB
-
 struct Record {
     RecordType type;
     std::string key;
@@ -32,7 +25,4 @@ class Storage {
     std::string path_;
     void initializeFile();
     void validateFile() const;
-    std::vector<char> serializePayload(const Record& record) const;
-    std::vector<char> serializeRecord(const Record& record) const;
-    std::uint32_t calculateChecksum(const std::vector<char>& data) const;
 };
