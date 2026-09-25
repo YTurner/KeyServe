@@ -16,8 +16,8 @@ class Storage {
   public:
     explicit Storage(const std::string& path);
 
-    void appendPut(const std::string& key, const std::string& value);
-    void appendDelete(const std::string& key);
+    void appendPut(const std::string& key, const std::string& value) const;
+    void appendDelete(const std::string& key) const;
 
     std::vector<Record> readAll() const;
 

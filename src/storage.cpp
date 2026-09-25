@@ -14,7 +14,7 @@ namespace {
 
 // Key Serve DataBase magic bytes for db file signature
 constexpr char FILE_MAGIC[4] = {'K', 'S', 'D', 'B'};
-constexpr std::uint8_t FILE_VERSION = 1;
+constexpr std::uint8_t FILE_VERSION = 2;
 
 constexpr std::uint32_t MAX_KEY_SIZE = 1024 * 1024;        // 1 MiB
 constexpr std::uint32_t MAX_VALUE_SIZE = 64 * 1024 * 1024; // 64 MiB
@@ -347,47 +347,28 @@ void Storage::validateFile() const {
     }
 }
 
-void Storage::appendPut(const std::string& key, const std::string& value) {
+void Storage::appendPut(const std::string& key, const std::string& value) const {
     std::ofstream file(path_, std::ios::binary | std::ios::app);
     if (!file) {
         throw std::runtime_error("Failed to open database file");
     }
 
-    const std::uint8_t type = static_cast<std::uint8_t>(RecordType::Put);
-
-    const std::uint32_t keyLength = static_cast<std::uint32_t>(key.size());
-
-    const std::uint32_t valueLength = static_cast<std::uint32_t>(value.size());
-
-    file.write(reinterpret_cast<const char*>(&type), sizeof(type));
-
-    file.write(reinterpret_cast<const char*>(&keyLength), sizeof(keyLength));
-
-    file.write(reinterpret_cast<const char*>(&valueLength), sizeof(valueLength));
-
-    file.write(key.data(), keyLength);
-    file.write(value.data(), valueLength);
+    std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
+    file.write(serializedRecord.data(), serializedRecord.size());
 
     if (!file) {
-        throw std::runtime_error("Failed to write database record");
+        throw StorageError("Failed to write database record");
     }
 }
 
-void Storage::appendDelete(const std::string& key) {
+void Storage::appendDelete(const std::string& key) const {
     std::ofstream file(path_, std::ios::binary | std::ios::app);
     if (!file) {
-        throw std::runtime_error("Failed to open database file");
+        throw StorageError("Failed to open database file");
     }
 
-    const std::uint8_t type = static_cast<std::uint8_t>(RecordType::Delete);
-
-    const std::uint32_t keyLength = static_cast<std::uint32_t>(key.size());
-
-    file.write(reinterpret_cast<const char*>(&type), sizeof(type));
-
-    file.write(reinterpret_cast<const char*>(&keyLength), sizeof(keyLength));
-
-    file.write(key.data(), keyLength);
+    std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
+    file.write(serializedRecord.data(), serializedRecord.size());
 
     if (!file) {
         throw std::runtime_error("Failed to write database record");
@@ -408,57 +389,11 @@ std::vector<Record> Storage::readAll() const {
     }
 
     while (true) {
-        std::uint8_t rawType;
-        file.read(reinterpret_cast<char*>(&rawType), sizeof(rawType));
-
-        // If we couldn't read the next record type because we reached
-        // the end of the file, that's a normal end of the log.
-        if (file.eof()) {
+        std::optional<Record> record = readRecord(file);
+        if (!record.has_value()) {
             break;
         }
-
-        if (!file) {
-            throw std::runtime_error("Failed while reading database file");
-        }
-
-        if (rawType != static_cast<std::uint8_t>(RecordType::Put) &&
-            rawType != static_cast<std::uint8_t>(RecordType::Delete)) {
-            throw std::runtime_error("Corrupted database: unknown record type");
-        }
-
-        std::uint32_t keyLength;
-        file.read(reinterpret_cast<char*>(&keyLength), sizeof(keyLength));
-        if (!file) {
-            throw std::runtime_error("Corrupted database: incomplete key length");
-        }
-
-        std::uint32_t valueLength = 0;
-        if (rawType == static_cast<std::uint8_t>(RecordType::Put)) {
-            file.read(reinterpret_cast<char*>(&valueLength), sizeof(valueLength));
-
-            if (!file) {
-                throw std::runtime_error("Corrupted database: incomplete value length");
-            }
-        }
-
-        std::string key(keyLength, '\0');
-        file.read(key.data(), keyLength);
-        if (!file) {
-            throw std::runtime_error("Corrupted database: incomplete key");
-        }
-
-        std::string value;
-        if (rawType == static_cast<std::uint8_t>(RecordType::Put)) {
-            value.resize(valueLength);
-
-            file.read(value.data(), valueLength);
-
-            if (!file) {
-                throw std::runtime_error("Corrupted database: incomplete value");
-            }
-        }
-
-        records.push_back({static_cast<RecordType>(rawType), key, value});
+        records.emplace_back(*record);
     }
 
     return records;
