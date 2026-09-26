@@ -12,7 +12,7 @@
 
 #include "errors.hpp"
 
-// helpers
+// Binary record encoding/decoding helpers used only by this translation unit.
 namespace {
 
 // Key Serve DataBase magic bytes for db file signature
@@ -67,7 +67,7 @@ std::optional<std::vector<char>> tryReadBytes(const std::vector<char>& buffer, s
 }
 
 // Calculates CRC-32/IEEE over the supplied serialized bytes.
-// TODO: implement an optimized checksum
+// TODO: Replace bit-at-a-time CRC32 with a table-based implementation.
 std::uint32_t calculateChecksum(const std::vector<char>& data) {
     std::uint32_t crc = CRC_INITIAL_VALUE;
     for (const auto& byte : data) {
@@ -216,6 +216,8 @@ Record parsePayload(RecordType type, const std::vector<char>& payload) {
             std::string(value->begin(), value->end())};
 }
 
+// Reads and validates one v2 record from the current stream position.
+//* Clean EOF, incomplete tail, corruption, and I/O failure have different meanings.
 std::optional<Record> readRecord(std::ifstream& file) {
     char typeByte;
     if (!file.get(typeByte)) {
@@ -241,7 +243,7 @@ std::optional<Record> readRecord(std::ifstream& file) {
     default:
         throw CorruptionError("Invalid type in record");
     }
-    // 4 bytes for payload length and checksum
+    // Read the fixed 8-byte record header fields: payload length and checksum.
     std::vector<char> buffer(2 * 4);
     file.read(buffer.data(), buffer.size());
     if (file.gcount() != static_cast<std::streamsize>(buffer.size())) {
@@ -250,14 +252,14 @@ std::optional<Record> readRecord(std::ifstream& file) {
         }
 
         if (file.eof()) {
-            throw CorruptionError("Incomplete database record");
+            throw IncompleteRecordError("Incomplete database record");
         }
 
         throw StorageError("Failed while reading database file");
     }
 
     size_t bufferOffset = 0;
-    // doesn't need to be optional because we know we got exactly 8 bytes
+    // The fixed header read above guarantees both uint32 fields are present.
     uint32_t payloadLength = *tryReadUint32LE(buffer, bufferOffset);
     uint32_t MAX_PAYLOAD_SIZE;
     if (type == RecordType::Delete) {
@@ -279,7 +281,7 @@ std::optional<Record> readRecord(std::ifstream& file) {
         }
 
         if (file.eof()) {
-            throw CorruptionError("Incomplete database record");
+            throw IncompleteRecordError("Incomplete database record");
         }
 
         throw StorageError("Failed while reading database file");
@@ -298,6 +300,8 @@ std::optional<Record> readRecord(std::ifstream& file) {
     return parsePayload(type, payload);
 }
 
+// Writes the entire buffer, retrying partial writes and EINTR.
+//* POSIX write() may succeed without consuming the entire buffer.
 void writeAll(int fd, const std::vector<char>& data) {
     size_t bytesLeft = data.size();
     const char* writePtr = data.data();
@@ -320,6 +324,7 @@ void writeAll(int fd, const std::vector<char>& data) {
     }
 }
 
+// Opens the persistent append-only write descriptor used for database updates.
 int openWriteDescriptor(const std::string& path) {
     int fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC);
     if (fd < 0) {
@@ -330,13 +335,13 @@ int openWriteDescriptor(const std::string& path) {
 
 } // namespace
 
-Storage::Storage(const std::string& path) : path_(path), writeFd() {
+Storage::Storage(const std::string& path) : path_(path), writeFd_() {
     if (!std::filesystem::exists(path_)) {
         initializeFile();
     } else {
         validateFile();
     }
-    writeFd.reset(openWriteDescriptor(path_));
+    writeFd_.reset(openWriteDescriptor(path_));
 }
 
 // Creates a new database file containing only the file signature and format version.
@@ -384,21 +389,23 @@ void Storage::validateFile() const {
 
 void Storage::appendPut(const std::string& key, const std::string& value) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
-    writeAll(writeFd.get(), serializedRecord);
-    if (fdatasync(writeFd.get()) < 0) {
+    writeAll(writeFd_.get(), serializedRecord);
+    if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("failed to sync database file");
     }
 }
 
 void Storage::appendDelete(const std::string& key) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
-    writeAll(writeFd.get(), serializedRecord);
-    if (fdatasync(writeFd.get()) < 0) {
+    writeAll(writeFd_.get(), serializedRecord);
+    if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("failed to sync database file");
     }
 }
 
-std::vector<Record> Storage::readAll() const {
+// Replays valid records in order.
+//* Only an incomplete final record is auto-recovered; other corruption stays fatal.
+std::vector<Record> Storage::readAll() {
     std::vector<Record> records;
 
     std::ifstream file(path_, std::ios::binary);
@@ -412,7 +419,19 @@ std::vector<Record> Storage::readAll() const {
     }
 
     while (true) {
-        std::optional<Record> record = readRecord(file);
+        std::optional<Record> record;
+        std::streampos lastRead;
+        try {
+            lastRead = file.tellg();
+            if (lastRead == std::streampos(-1)) {
+                throw StorageError("Failed to read database file");
+            }
+            record = readRecord(file);
+        } catch (const IncompleteRecordError&) {
+            std::streamoff validLength = lastRead - std::streampos(0);
+            recoverIncompleteTail(static_cast<off_t>(validLength));
+            return records;
+        }
         if (!record.has_value()) {
             break;
         }
@@ -420,4 +439,15 @@ std::vector<Record> Storage::readAll() const {
     }
 
     return records;
+}
+
+// Removes an incomplete final record by truncating to the last valid boundary.
+//* The repaired file is synced before recovery is considered successful.
+void Storage::recoverIncompleteTail(off_t lastValidLength) {
+    if (ftruncate(writeFd_.get(), lastValidLength) < 0) {
+        throw StorageError("Failed to truncate database file");
+    }
+    if (fdatasync(writeFd_.get()) < 0) {
+        throw StorageError("Failed to sync database file");
+    }
 }
