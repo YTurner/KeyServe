@@ -320,14 +320,23 @@ void writeAll(int fd, const std::vector<char>& data) {
     }
 }
 
+int openWriteDescriptor(const std::string& path) {
+    int fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CLOEXEC);
+    if (fd < 0) {
+        throw StorageError("Failed to open database file");
+    }
+    return fd;
+}
+
 } // namespace
 
-Storage::Storage(const std::string& path) : path_(path) {
+Storage::Storage(const std::string& path) : path_(path), writeFd() {
     if (!std::filesystem::exists(path_)) {
         initializeFile();
     } else {
         validateFile();
     }
+    writeFd.reset(openWriteDescriptor(path_));
 }
 
 // Creates a new database file containing only the file signature and format version.
@@ -375,31 +384,17 @@ void Storage::validateFile() const {
 
 void Storage::appendPut(const std::string& key, const std::string& value) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
-
-    int fd = open(path_.c_str(), O_WRONLY | O_APPEND);
-    if (fd == -1) {
-        throw StorageError("Failed to open database file");
-    }
-    UniqueFd uniqueFd(fd);
-    writeAll(uniqueFd.get(), serializedRecord);
-
-    if (fdatasync(uniqueFd.get()) < 0) {
+    writeAll(writeFd.get(), serializedRecord);
+    if (fdatasync(writeFd.get()) < 0) {
         throw StorageError("failed to sync database file");
     }
 }
 
 void Storage::appendDelete(const std::string& key) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
-
-    int fd = open(path_.c_str(), O_WRONLY | O_APPEND);
-    if (fd == -1) {
-        throw StorageError("Failed to open database file");
-    }
-    UniqueFd uniqueFd(fd);
-    writeAll(uniqueFd.get(), serializedRecord);
-
-    if (fdatasync(uniqueFd.get()) < 0) {
-        throw StorageError("Failed to sync database file");
+    writeAll(writeFd.get(), serializedRecord);
+    if (fdatasync(writeFd.get()) < 0) {
+        throw StorageError("failed to sync database file");
     }
 }
 

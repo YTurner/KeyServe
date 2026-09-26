@@ -14,5 +14,5 @@ class UniqueFd {
     UniqueFd& operator=(UniqueFd&& other) noexcept = delete;
 
   private:
-    int fd;
+    int fd_;
 };

@@ -24,6 +24,8 @@ class Storage {
 
   private:
     std::string path_;
+    UniqueFd writeFd;
+
     void initializeFile();
     void validateFile() const;
 };

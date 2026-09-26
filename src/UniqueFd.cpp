@@ -1,33 +1,33 @@
 #include "UniqueFd.hpp"
 #include <unistd.h>
 
-UniqueFd::UniqueFd() : fd(-1) {}
+UniqueFd::UniqueFd() : fd_(-1) {}
 
-UniqueFd::UniqueFd(int fd) : fd(fd) {}
+UniqueFd::UniqueFd(int fd) : fd_(fd) {}
 
-UniqueFd::UniqueFd(UniqueFd&& other) noexcept : fd(other.fd) {
-    other.fd = -1;
+UniqueFd::UniqueFd(UniqueFd&& other) noexcept : fd_(other.fd_) {
+    other.fd_ = -1;
 }
 
 UniqueFd::~UniqueFd() {
-    if (fd != -1) {
-        close(fd);
+    if (fd_ != -1) {
+        close(fd_);
     }
 }
 
 int UniqueFd::get() const {
-    return fd;
+    return fd_;
 }
 
 void UniqueFd::reset(int newFd) {
-    if (fd != -1 && fd != newFd) {
-        close(fd);
+    if (fd_ != -1 && fd_ != newFd) {
+        close(fd_);
     }
-    fd = newFd;
+    fd_ = newFd;
 }
 
 int UniqueFd::release() {
-    int oldFd = fd;
-    fd = -1;
+    int oldFd = fd_;
+    fd_ = -1;
     return oldFd;
 }
