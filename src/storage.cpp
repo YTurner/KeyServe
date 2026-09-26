@@ -1,11 +1,14 @@
 #include "storage.hpp"
 
+#include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <unistd.h>
 
 #include "errors.hpp"
 
@@ -294,6 +297,29 @@ std::optional<Record> readRecord(std::ifstream& file) {
 
     return parsePayload(type, payload);
 }
+
+void writeAll(int fd, const std::vector<char>& data) {
+    size_t bytesLeft = data.size();
+    const char* writePtr = data.data();
+    while (bytesLeft > 0) {
+        ssize_t bytesWritten = write(fd, writePtr, bytesLeft);
+
+        if (bytesWritten == 0) {
+            throw StorageError("Failed to write database record");
+        }
+
+        if (bytesWritten < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            throw StorageError("Failed to write database record");
+        }
+
+        writePtr += bytesWritten;
+        bytesLeft -= bytesWritten;
+    }
+}
+
 } // namespace
 
 Storage::Storage(const std::string& path) : path_(path) {
@@ -347,31 +373,33 @@ void Storage::validateFile() const {
     }
 }
 
-void Storage::appendPut(const std::string& key, const std::string& value) const {
-    std::ofstream file(path_, std::ios::binary | std::ios::app);
-    if (!file) {
-        throw std::runtime_error("Failed to open database file");
-    }
-
+void Storage::appendPut(const std::string& key, const std::string& value) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
-    file.write(serializedRecord.data(), serializedRecord.size());
 
-    if (!file) {
-        throw StorageError("Failed to write database record");
+    int fd = open(path_.c_str(), O_WRONLY | O_APPEND);
+    if (fd == -1) {
+        throw StorageError("Failed to open database file");
+    }
+    UniqueFd uniqueFd(fd);
+    writeAll(uniqueFd.get(), serializedRecord);
+
+    if (fdatasync(uniqueFd.get()) < 0) {
+        throw StorageError("failed to sync database file");
     }
 }
 
-void Storage::appendDelete(const std::string& key) const {
-    std::ofstream file(path_, std::ios::binary | std::ios::app);
-    if (!file) {
+void Storage::appendDelete(const std::string& key) {
+    std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
+
+    int fd = open(path_.c_str(), O_WRONLY | O_APPEND);
+    if (fd == -1) {
         throw StorageError("Failed to open database file");
     }
+    UniqueFd uniqueFd(fd);
+    writeAll(uniqueFd.get(), serializedRecord);
 
-    std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
-    file.write(serializedRecord.data(), serializedRecord.size());
-
-    if (!file) {
-        throw std::runtime_error("Failed to write database record");
+    if (fdatasync(uniqueFd.get()) < 0) {
+        throw StorageError("Failed to sync database file");
     }
 }
 

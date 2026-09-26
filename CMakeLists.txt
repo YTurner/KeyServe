@@ -13,6 +13,7 @@ add_executable(keyserve
     src/main.cpp
     src/database.cpp
     src/storage.cpp
+    src/UniqueFd.cpp
 )
 
 target_include_directories(keyserve

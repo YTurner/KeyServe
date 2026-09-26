@@ -1,5 +1,6 @@
 #pragma once
 
+#include "UniqueFd.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -16,8 +17,8 @@ class Storage {
   public:
     explicit Storage(const std::string& path);
 
-    void appendPut(const std::string& key, const std::string& value) const;
-    void appendDelete(const std::string& key) const;
+    void appendPut(const std::string& key, const std::string& value);
+    void appendDelete(const std::string& key);
 
     std::vector<Record> readAll() const;
 
