@@ -1,17 +1,15 @@
 #include "database.hpp"
 
 Database::Database(const std::string& path) : storage_(path) {
-    auto records = storage_.readAll();
-
-    /// Rebuild the current in-memory state by replaying the persistent operation log.
+    // Rebuild the current in-memory state by replaying the persistent operation log.
     //* Replay modifies data_ directly so recovered operations are not appended again.
-    for (const auto& record : records) {
+    storage_.replay([this](const Record& record) {
         if (record.type == RecordType::Put) {
             data_.insert_or_assign(record.key, record.value);
         } else if (record.type == RecordType::Delete) {
             data_.erase(record.key);
         }
-    }
+    });
 }
 
 void Database::put(const std::string& key, const std::string& value) {

@@ -2,6 +2,7 @@
 
 #include "UniqueFd.hpp"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -22,7 +23,7 @@ class Storage {
     void appendPut(const std::string& key, const std::string& value);
     void appendDelete(const std::string& key);
 
-    std::vector<Record> readAll();
+    void replay(const std::function<void(const Record&)>& apllyRecord);
 
   private:
     std::string path_;

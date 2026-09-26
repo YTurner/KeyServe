@@ -405,9 +405,7 @@ void Storage::appendDelete(const std::string& key) {
 
 // Replays valid records in order.
 //* Only an incomplete final record is auto-recovered; other corruption stays fatal.
-std::vector<Record> Storage::readAll() {
-    std::vector<Record> records;
-
+void Storage::replay(const std::function<void(const Record&)>& applyRecord) {
     std::ifstream file(path_, std::ios::binary);
     if (!file) {
         throw StorageError("Failed to open database file");
@@ -430,15 +428,13 @@ std::vector<Record> Storage::readAll() {
         } catch (const IncompleteRecordError&) {
             std::streamoff validLength = lastRead - std::streampos(0);
             recoverIncompleteTail(static_cast<off_t>(validLength));
-            return records;
+            return;
         }
         if (!record.has_value()) {
             break;
         }
-        records.emplace_back(*record);
+        applyRecord(*record);
     }
-
-    return records;
 }
 
 // Removes an incomplete final record by truncating to the last valid boundary.
