@@ -4,7 +4,6 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -39,7 +38,7 @@ void appendUint32LE(std::vector<char>& buffer, std::uint32_t value) {
 // Reads four little-endian bytes as a uint32_t.
 // On success, advances offset by four bytes.
 // On failure, returns nullopt and leaves offset unchanged.
-std::optional<std::uint32_t> tryReadUint32LE(const std::vector<char>& buffer, std::size_t& offset) {
+std::optional<std::uint32_t> tryReadUint32LE(const std::vector<char>& buffer, size_t& offset) {
     if (offset > buffer.size() || buffer.size() - offset < 4) {
         return std::nullopt;
     }
@@ -55,8 +54,8 @@ std::optional<std::uint32_t> tryReadUint32LE(const std::vector<char>& buffer, st
 }
 
 // Reads count bytes from buffer starting from offset and increments offset by count
-std::optional<std::vector<char>> tryReadBytes(const std::vector<char>& buffer, std::size_t& offset,
-                                              std::size_t count) {
+std::optional<std::vector<char>> tryReadBytes(const std::vector<char>& buffer, size_t& offset,
+                                              size_t count) {
     if (offset > buffer.size() || count > buffer.size() - offset) {
         return std::nullopt;
     }
@@ -66,6 +65,31 @@ std::optional<std::vector<char>> tryReadBytes(const std::vector<char>& buffer, s
     return data;
 }
 
+// reads as many bytes as it can to buffer, retrying partial reads and EINTR.
+// returns how many bytes it read
+//* POSIX read() may succeed without reading all required bytes.
+size_t readUpTo(int fd, char* ptr, size_t numberOfBytes) {
+    size_t bytesLeft = numberOfBytes;
+    while (bytesLeft > 0) {
+        ssize_t bytesRead = read(fd, ptr, bytesLeft);
+
+        if (bytesRead == 0) {
+            return (numberOfBytes - bytesLeft);
+        }
+
+        if (bytesRead < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            throw StorageError("Failed to read from database file");
+        }
+
+        ptr += bytesRead;
+        bytesLeft -= bytesRead;
+    }
+
+    return (numberOfBytes - bytesLeft);
+}
 // Calculates CRC-32/IEEE over the supplied serialized bytes.
 // TODO: Replace bit-at-a-time CRC32 with a table-based implementation.
 std::uint32_t calculateChecksum(const std::vector<char>& data) {
@@ -216,22 +240,13 @@ Record parsePayload(RecordType type, const std::vector<char>& payload) {
             std::string(value->begin(), value->end())};
 }
 
-// Reads and validates one v2 record from the current stream position.
+// Reads and validates one v2 record from the current file-descriptor offset.
 //* Clean EOF, incomplete tail, corruption, and I/O failure have different meanings.
-std::optional<Record> readRecord(std::ifstream& file) {
+std::optional<Record> readRecord(int fd) {
     char typeByte;
-    if (!file.get(typeByte)) {
-        if (file.bad()) {
-            throw StorageError("Failed while reading database file");
-        }
-
-        if (file.eof()) {
-            return std::nullopt;
-        }
-
-        throw StorageError("Failed while reading database file");
+    if (readUpTo(fd, &typeByte, 1) == 0) {
+        return std::nullopt;
     }
-
     RecordType type;
     switch (static_cast<RecordType>(typeByte)) {
     case RecordType::Put:
@@ -243,19 +258,11 @@ std::optional<Record> readRecord(std::ifstream& file) {
     default:
         throw CorruptionError("Invalid type in record");
     }
+
     // Read the fixed 8-byte record header fields: payload length and checksum.
     std::vector<char> buffer(2 * 4);
-    file.read(buffer.data(), buffer.size());
-    if (file.gcount() != static_cast<std::streamsize>(buffer.size())) {
-        if (file.bad()) {
-            throw StorageError("Failed while reading database file");
-        }
-
-        if (file.eof()) {
-            throw IncompleteRecordError("Incomplete database record");
-        }
-
-        throw StorageError("Failed while reading database file");
+    if (readUpTo(fd, buffer.data(), buffer.size()) < 2 * 4) {
+        throw IncompleteRecordError("Incomplete database record");
     }
 
     size_t bufferOffset = 0;
@@ -274,17 +281,8 @@ std::optional<Record> readRecord(std::ifstream& file) {
     uint32_t checkSum = *tryReadUint32LE(buffer, bufferOffset);
 
     std::vector<char> payload(payloadLength);
-    file.read(payload.data(), payload.size());
-    if (file.gcount() != static_cast<std::streamsize>(payload.size())) {
-        if (file.bad()) {
-            throw StorageError("Failed while reading database file");
-        }
-
-        if (file.eof()) {
-            throw IncompleteRecordError("Incomplete database record");
-        }
-
-        throw StorageError("Failed while reading database file");
+    if (readUpTo(fd, payload.data(), payload.size()) < payload.size()) {
+        throw IncompleteRecordError("Incomplete database record");
     }
 
     std::vector<char> checkSumBuffer;
@@ -302,24 +300,23 @@ std::optional<Record> readRecord(std::ifstream& file) {
 
 // Writes the entire buffer, retrying partial writes and EINTR.
 //* POSIX write() may succeed without consuming the entire buffer.
-void writeAll(int fd, const std::vector<char>& data) {
-    size_t bytesLeft = data.size();
-    const char* writePtr = data.data();
+void writeAll(int fd, const char* ptr, size_t numberOfBytes) {
+    size_t bytesLeft = numberOfBytes;
     while (bytesLeft > 0) {
-        ssize_t bytesWritten = write(fd, writePtr, bytesLeft);
+        ssize_t bytesWritten = write(fd, ptr, bytesLeft);
 
         if (bytesWritten == 0) {
-            throw StorageError("Failed to write database record");
+            throw StorageError("Failed to write to database file");
         }
 
         if (bytesWritten < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            throw StorageError("Failed to write database record");
+            throw StorageError("Failed to write  to database file");
         }
 
-        writePtr += bytesWritten;
+        ptr += bytesWritten;
         bytesLeft -= bytesWritten;
     }
 }
@@ -333,63 +330,77 @@ int openWriteDescriptor(const std::string& path) {
     return fd;
 }
 
+// Opens the persistent read descriptor used for database checks.
+int openReadDescriptor(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        throw StorageError("Failed to open database file");
+    }
+    return fd;
+}
+
+void writeDatabaseHeader(int fd) {
+    writeAll(fd, FILE_MAGIC, sizeof(FILE_MAGIC)); // file signature
+
+    const std::uint8_t version = FILE_VERSION;
+    writeAll(fd, reinterpret_cast<const char*>(&version), sizeof(version));
+}
+
 } // namespace
 
-Storage::Storage(const std::string& path) : path_(path), writeFd_() {
+Storage::Storage(const std::string& path) : path_(path), writeFd_(), readFd_() {
     if (!std::filesystem::exists(path_)) {
-        initializeFile();
+        writeFd_.reset(initializeFile());
+        readFd_.reset(openReadDescriptor(path_));
     } else {
-        validateFile();
+        readFd_.reset(validateFile());
+        writeFd_.reset(openWriteDescriptor(path_));
     }
-    writeFd_.reset(openWriteDescriptor(path_));
 }
 
 // Creates a new database file containing only the file signature and format version.
-void Storage::initializeFile() {
-    std::ofstream file(path_, std::ios::binary | std::ios::trunc);
-    if (!file) {
+int Storage::initializeFile() {
+    int fd = open(path_.c_str(), O_CREAT | O_WRONLY | O_APPEND | O_EXCL | O_CLOEXEC, 0666);
+    if (fd < 0) {
         throw StorageError("Failed to create database file");
     }
-
-    file.write(FILE_MAGIC, sizeof(FILE_MAGIC)); // file signature
-
-    const std::uint8_t version = FILE_VERSION;
-    file.write(reinterpret_cast<const char*>(&version), sizeof(version));
-
-    if (!file) {
-        throw StorageError("Failed to initialize database file");
+    UniqueFd tempUniqueFd(fd);
+    writeDatabaseHeader(tempUniqueFd.get());
+    if (fdatasync(tempUniqueFd.get()) < 0) {
+        throw StorageError("failed to sync database file");
     }
+    return (tempUniqueFd.release());
 }
 
 // Validates the database signature and file-format version before records are read.
-void Storage::validateFile() const {
-    std::ifstream file(path_, std::ios::binary);
-    if (!file) {
-        throw StorageError("Failed to open database file");
-    }
+int Storage::validateFile() const {
+    UniqueFd tempUniqeFd(openReadDescriptor(path_));
 
     char magic_header[4];
-    file.read(magic_header, sizeof(magic_header));
-    if (!file) {
-        throw CorruptionError("Incomplete database header");
+    size_t magicReadCheck = readUpTo(tempUniqeFd.get(), magic_header, sizeof(magic_header));
+    if (magicReadCheck < sizeof(magic_header)) {
+        throw CorruptionError("Incomplete KeyServe file header");
     }
     if (std::memcmp(FILE_MAGIC, magic_header, sizeof(FILE_MAGIC)) != 0) {
         throw CorruptionError("Invalid KeyServe file header");
     }
 
     std::uint8_t version;
-    file.read(reinterpret_cast<char*>(&version), sizeof(version));
-    if (!file) {
-        throw CorruptionError("Incomplete database header");
+    size_t versionReadCheck =
+        readUpTo(tempUniqeFd.get(), reinterpret_cast<char*>(&version), sizeof(version));
+    if (versionReadCheck < sizeof(version)) {
+        throw CorruptionError("Incomplete KeyServe file header");
     }
     if (version != FILE_VERSION) {
         throw CorruptionError("Unsupported KeyServe database version");
     }
+
+    return (tempUniqeFd.release());
 }
 
 void Storage::appendPut(const std::string& key, const std::string& value) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
-    writeAll(writeFd_.get(), serializedRecord);
+    writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("failed to sync database file");
     }
@@ -397,7 +408,7 @@ void Storage::appendPut(const std::string& key, const std::string& value) {
 
 void Storage::appendDelete(const std::string& key) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
-    writeAll(writeFd_.get(), serializedRecord);
+    writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("failed to sync database file");
     }
@@ -406,28 +417,19 @@ void Storage::appendDelete(const std::string& key) {
 // Replays valid records in order.
 //* Only an incomplete final record is auto-recovered; other corruption stays fatal.
 void Storage::replay(const std::function<void(const Record&)>& applyRecord) {
-    std::ifstream file(path_, std::ios::binary);
-    if (!file) {
-        throw StorageError("Failed to open database file");
-    }
-
-    file.seekg(sizeof(FILE_MAGIC) + sizeof(FILE_VERSION), std::ios::beg);
-    if (!file) {
+    if (lseek(readFd_.get(), sizeof(FILE_MAGIC) + sizeof(FILE_VERSION), SEEK_SET) == -1) {
         throw StorageError("Failed to seek past database header");
     }
-
     while (true) {
         std::optional<Record> record;
-        std::streampos lastRead;
+        off_t lastRead = lseek(readFd_.get(), 0, SEEK_CUR);
+        if (lastRead == -1) {
+            throw StorageError("Failed to read database file");
+        }
         try {
-            lastRead = file.tellg();
-            if (lastRead == std::streampos(-1)) {
-                throw StorageError("Failed to read database file");
-            }
-            record = readRecord(file);
+            record = readRecord(readFd_.get());
         } catch (const IncompleteRecordError&) {
-            std::streamoff validLength = lastRead - std::streampos(0);
-            recoverIncompleteTail(static_cast<off_t>(validLength));
+            recoverIncompleteTail(lastRead);
             return;
         }
         if (!record.has_value()) {

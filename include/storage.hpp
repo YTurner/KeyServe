@@ -7,9 +7,6 @@
 #include <vector>
 
 enum class RecordType : std::uint8_t { Put = 1, Delete = 2 };
-
-// Logical database operation reconstructed from or written to the storage log.
-// Serialization details such as payload length and checksum stay inside Storage.
 struct Record {
     RecordType type;
     std::string key;
@@ -29,8 +26,9 @@ class Storage {
     std::string path_;
     // Kept open for the Storage lifetime to avoid reopening the DB for every append.
     UniqueFd writeFd_;
+    UniqueFd readFd_;
 
-    void initializeFile();
-    void validateFile() const;
+    int initializeFile();
+    int validateFile() const;
     void recoverIncompleteTail(off_t lastValidLength);
 };
