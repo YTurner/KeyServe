@@ -14,6 +14,7 @@ class Database {
     std::optional<std::string> get(const std::string& key) const;
     bool remove(const std::string& key);
     bool exists(const std::string& key) const;
+    bool compact();
 
   private:
     Storage storage_;

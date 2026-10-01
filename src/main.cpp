@@ -7,11 +7,13 @@
 #include "errors.hpp"
 #include "storage.hpp"
 
-enum COMMAND { PUT, DELETE, GET, EXISTS, EXIT, UNKNOWN };
+// TODO: remove straight compact command when done automating it
+enum COMMAND { PUT, DELETE, GET, EXISTS, EXIT, COMPACT, UNKNOWN };
 
 static COMMAND resolveCommand(const std::string& input) {
     static const std::unordered_map<std::string, COMMAND> commandMap = {
-        {"PUT", PUT}, {"DELETE", DELETE}, {"GET", GET}, {"EXISTS", EXISTS}, {"EXIT", EXIT}};
+        {"PUT", PUT},       {"DELETE", DELETE},   {"GET", GET},
+        {"EXISTS", EXISTS}, {"COMPACT", COMPACT}, {"EXIT", EXIT}};
 
     auto it = commandMap.find(input);
     if (it != commandMap.end()) {
@@ -77,6 +79,14 @@ static void handlePUT(Database& db, std::istringstream& input) {
     std::cout << "OK\n";
 }
 
+static void handleCOMPACT(Database& db) {
+    if (db.compact()) {
+        std::cout << "OK\n";
+    } else {
+        std::cout << "COMPACTION FAILED\n";
+    }
+}
+
 // handles command calling. returns false if command if need to exit keyserve
 static bool handleCommands(Database& db) {
     std::string line;
@@ -108,6 +118,9 @@ static bool handleCommands(Database& db) {
         break;
     case EXISTS:
         handleExists(db, input);
+        break;
+    case COMPACT:
+        handleCOMPACT(db);
         break;
     case EXIT:
         return false;

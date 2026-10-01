@@ -45,3 +45,11 @@ bool Database::remove(const std::string& key) {
 bool Database::exists(const std::string& key) const {
     return data_.find(key) != data_.end();
 }
+
+bool Database::compact() {
+    return storage_.compact([this](const EntrySink& sink) {
+        for (const auto& [key, value] : data_) {
+            sink(key, value);
+        }
+    });
+}

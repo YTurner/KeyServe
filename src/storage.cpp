@@ -7,6 +7,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "errors.hpp"
@@ -268,13 +269,13 @@ std::optional<Record> readRecord(int fd) {
     size_t bufferOffset = 0;
     // The fixed header read above guarantees both uint32 fields are present.
     uint32_t payloadLength = *tryReadUint32LE(buffer, bufferOffset);
-    uint32_t MAX_PAYLOAD_SIZE;
+    uint32_t maxPayloadSize;
     if (type == RecordType::Delete) {
-        MAX_PAYLOAD_SIZE = MAX_KEY_SIZE + 4;
+        maxPayloadSize = MAX_KEY_SIZE + 4;
     } else {
-        MAX_PAYLOAD_SIZE = MAX_KEY_SIZE + MAX_VALUE_SIZE + 2 * 4;
+        maxPayloadSize = MAX_KEY_SIZE + MAX_VALUE_SIZE + 2 * 4;
     }
-    if (payloadLength > MAX_PAYLOAD_SIZE) {
+    if (payloadLength > maxPayloadSize) {
         throw CorruptionError("Payload exceeds maximum allowed size");
     }
 
@@ -367,7 +368,7 @@ int Storage::initializeFile() {
     UniqueFd tempUniqueFd(fd);
     writeDatabaseHeader(tempUniqueFd.get());
     if (fdatasync(tempUniqueFd.get()) < 0) {
-        throw StorageError("failed to sync database file");
+        throw StorageError("Failed to sync database file");
     }
     return (tempUniqueFd.release());
 }
@@ -402,7 +403,7 @@ void Storage::appendPut(const std::string& key, const std::string& value) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
     writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
-        throw StorageError("failed to sync database file");
+        throw StorageError("Failed to sync database file");
     }
 }
 
@@ -410,7 +411,7 @@ void Storage::appendDelete(const std::string& key) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
     writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
-        throw StorageError("failed to sync database file");
+        throw StorageError("Failed to sync database file");
     }
 }
 
@@ -447,5 +448,81 @@ void Storage::recoverIncompleteTail(off_t lastValidLength) {
     }
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("Failed to sync database file");
+    }
+}
+
+//! The active database must remain untouched until the complete temp database*
+//! has been written and synced successfully.
+bool Storage::compact(const EntrySource& source) {
+    bool renamed = false;
+    std::string tempPath = path_ + ".compact.XXXXXX";
+    try {
+        int tempFd = mkostemp(tempPath.data(), O_APPEND | O_CLOEXEC);
+        if (tempFd < 0) {
+            return false;
+        }
+        UniqueFd uniqueTempFd(tempFd);
+        struct stat dbStats;
+        if (fstat(writeFd_.get(), &dbStats) == -1) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+        mode_t dbPerms =
+            dbStats.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID | S_ISVTX);
+
+        if (fchmod(uniqueTempFd.get(), dbPerms) == -1) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+
+        writeDatabaseHeader(uniqueTempFd.get());
+        EntrySink sink = [&](const std::string& key, const std::string& value) {
+            std::vector<char> serializedRecord = serializeRecord({RecordType::Put, key, value});
+            writeAll(uniqueTempFd.get(), serializedRecord.data(), serializedRecord.size());
+        };
+        source(sink);
+        if (fsync(uniqueTempFd.get()) < 0) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+
+        UniqueFd nextWriteFd(openWriteDescriptor(tempPath));
+        UniqueFd nextReadFd(openReadDescriptor(tempPath));
+
+        std::string parentPath = std::filesystem::path(path_).parent_path();
+        if (parentPath.empty()) {
+            parentPath = ".";
+        }
+        int parentFd = open(parentPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (parentFd < 0) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+        UniqueFd uniqueParentFd(parentFd);
+
+        if (rename(tempPath.c_str(), path_.c_str()) < 0) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+        renamed = true;
+
+        if (fsync(uniqueParentFd.get()) < 0) {
+            throw StorageError("Failed to sync database file");
+        }
+
+        writeFd_.reset(nextWriteFd.release());
+        readFd_.reset(nextReadFd.release());
+        return true;
+    } catch (const StorageError&) {
+        if (!renamed) {
+            unlink(tempPath.c_str());
+            return false;
+        }
+        throw;
+    } catch (...) {
+        if (!renamed) {
+            unlink(tempPath.c_str());
+        }
+        throw;
     }
 }

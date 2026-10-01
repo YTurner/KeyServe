@@ -13,6 +13,9 @@ struct Record {
     std::string value;
 };
 
+using EntrySink = std::function<void(const std::string& key, const std::string& value)>;
+using EntrySource = std::function<void(const EntrySink& sink)>;
+
 class Storage {
   public:
     explicit Storage(const std::string& path);
@@ -21,6 +24,7 @@ class Storage {
     void appendDelete(const std::string& key);
 
     void replay(const std::function<void(const Record&)>& apllyRecord);
+    bool compact(const EntrySource& source);
 
   private:
     std::string path_;
