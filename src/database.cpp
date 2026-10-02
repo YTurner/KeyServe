@@ -10,12 +10,23 @@ Database::Database(const std::string& path) : storage_(path) {
             data_.erase(record.key);
         }
     });
+
+    storage_.initializeSizeAccounting([&](const EntrySink& sink) {
+        for (const auto& [key, value] : data_) {
+            sink(key, value);
+        }
+    });
 }
 
 void Database::put(const std::string& key, const std::string& value) {
     //* Persist first so RAM is only updated after the disk operation succeeds.
-    storage_.appendPut(key, value);
+    auto it = data_.find(key);
+    const std::string* oldValue = (it != data_.end()) ? &it->second : nullptr;
+    storage_.appendPut(key, value, oldValue);
     data_.insert_or_assign(key, value);
+    if (storage_.shouldCompact()) {
+        compact();
+    }
 }
 
 std::optional<std::string> Database::get(const std::string& key) const {
@@ -36,8 +47,12 @@ bool Database::remove(const std::string& key) {
     }
 
     //* Persist first so RAM is only updated after the disk operation succeeds.
-    storage_.appendDelete(key);
+    storage_.appendDelete(key, it->second);
     data_.erase(it);
+
+    if (storage_.shouldCompact()) {
+        compact();
+    }
 
     return true;
 }

@@ -22,6 +22,11 @@ constexpr std::uint8_t FILE_VERSION = 2;
 constexpr std::uint32_t MAX_KEY_SIZE = 1024 * 1024;        // 1 MiB
 constexpr std::uint32_t MAX_VALUE_SIZE = 64 * 1024 * 1024; // 64 MiB
 
+constexpr size_t MIN_WASTED_SIZE = 1024 * 1024; // 1 MiB
+constexpr float COMPACTION_THRESHOLD = 0.3;
+
+constexpr size_t APPEND_RECORD_OVERHEAD = 17;
+
 // CRC-32/IEEE parameters used for record integrity checks.
 static constexpr std::uint32_t CRC_POLYNOMIAL = 0xEDB88320;
 static constexpr std::uint32_t CRC_INITIAL_VALUE = 0xFFFFFFFF;
@@ -349,7 +354,9 @@ void writeDatabaseHeader(int fd) {
 
 } // namespace
 
-Storage::Storage(const std::string& path) : path_(path), writeFd_(), readFd_() {
+Storage::Storage(const std::string& path)
+    : path_(path), writeFd_(), readFd_(), currentSize_(0),
+      liveAfterCompact_(sizeof(FILE_MAGIC) + 1) {
     if (!std::filesystem::exists(path_)) {
         writeFd_.reset(initializeFile());
         readFd_.reset(openReadDescriptor(path_));
@@ -399,20 +406,28 @@ int Storage::validateFile() const {
     return (tempUniqeFd.release());
 }
 
-void Storage::appendPut(const std::string& key, const std::string& value) {
+void Storage::appendPut(const std::string& key, const std::string& value,
+                        const std::string* oldValue) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Put, key, value});
     writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("Failed to sync database file");
     }
+    currentSize_ += serializedRecord.size();
+    if (oldValue != nullptr) {
+        liveAfterCompact_ -= (APPEND_RECORD_OVERHEAD + key.size() + oldValue->size());
+    }
+    liveAfterCompact_ += (value.size() + APPEND_RECORD_OVERHEAD + key.size());
 }
 
-void Storage::appendDelete(const std::string& key) {
+void Storage::appendDelete(const std::string& key, const std::string& oldValue) {
     std::vector<char> serializedRecord = serializeRecord(Record{RecordType::Delete, key, ""});
     writeAll(writeFd_.get(), serializedRecord.data(), serializedRecord.size());
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("Failed to sync database file");
     }
+    currentSize_ += serializedRecord.size();
+    liveAfterCompact_ -= (APPEND_RECORD_OVERHEAD + key.size() + oldValue.size());
 }
 
 // Replays valid records in order.
@@ -449,6 +464,24 @@ void Storage::recoverIncompleteTail(off_t lastValidLength) {
     if (fdatasync(writeFd_.get()) < 0) {
         throw StorageError("Failed to sync database file");
     }
+}
+
+void Storage::initializeSizeAccounting(const EntrySource& source) {
+    struct stat filestat;
+    if (fstat(readFd_.get(), &filestat) == -1) {
+        // Database works without these but fstat failing indicates something wrong enough that it
+        // will be fatal
+        throw StorageError("Failed to retrieve database file size");
+    }
+    currentSize_ = filestat.st_size;
+
+    liveAfterCompact_ = sizeof(FILE_MAGIC) + 1;
+
+    EntrySink sink = [&](const std::string& key, const std::string& value) {
+        liveAfterCompact_ += key.size() + value.size() + APPEND_RECORD_OVERHEAD;
+    };
+
+    source(sink);
 }
 
 //! The active database must remain untouched until the complete temp database*
@@ -507,11 +540,12 @@ bool Storage::compact(const EntrySource& source) {
         renamed = true;
 
         if (fsync(uniqueParentFd.get()) < 0) {
-            throw StorageError("Failed to sync database file");
+            throw StorageError("Failed to sync database directory");
         }
 
         writeFd_.reset(nextWriteFd.release());
         readFd_.reset(nextReadFd.release());
+        currentSize_ = liveAfterCompact_;
         return true;
     } catch (const StorageError&) {
         if (!renamed) {
@@ -525,4 +559,18 @@ bool Storage::compact(const EntrySource& source) {
         }
         throw;
     }
+}
+
+bool Storage::shouldCompact() const {
+    bool isPastMinimumWasteSize = ((currentSize_ - liveAfterCompact_) >= MIN_WASTED_SIZE);
+    // liveAfterCompact should be at least 5 but if we got here when it was still zero just in case
+    if (currentSize_ == 0) {
+        // if we have this we know something went wrong
+        throw StorageError("Database file is empty");
+    }
+    size_t wastedBytes = currentSize_ - liveAfterCompact_;
+
+    bool isPastMinimumWasteRatio = ((static_cast<double>(wastedBytes) /
+                                     static_cast<double>(currentSize_)) >= COMPACTION_THRESHOLD);
+    return (isPastMinimumWasteSize && isPastMinimumWasteRatio);
 }

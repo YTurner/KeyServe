@@ -20,17 +20,22 @@ class Storage {
   public:
     explicit Storage(const std::string& path);
 
-    void appendPut(const std::string& key, const std::string& value);
-    void appendDelete(const std::string& key);
+    void appendPut(const std::string& key, const std::string& value, const std::string* oldValue);
+    void appendDelete(const std::string& key, const std::string& oldValue);
 
     void replay(const std::function<void(const Record&)>& apllyRecord);
     bool compact(const EntrySource& source);
+    bool shouldCompact() const;
+    void initializeSizeAccounting(const EntrySource& source);
 
   private:
     std::string path_;
-    // Kept open for the Storage lifetime to avoid reopening the DB for every append.
+
     UniqueFd writeFd_;
     UniqueFd readFd_;
+
+    size_t currentSize_;
+    size_t liveAfterCompact_;
 
     int initializeFile();
     int validateFile() const;
